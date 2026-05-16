@@ -79,6 +79,26 @@ class Lead(models.Model):
                 self.embed_from_profile(profile)
         return self.embedding_array
 
+    @property
+    def latest_deal(self):
+        """Most recently created Deal for this Lead across all campaigns."""
+        return self.deal_set.order_by("-creation_date").first()
+
+    @property
+    def latest_qualification_reason(self) -> str:
+        d = self.latest_deal
+        return d.reason if d else ""
+
+    @property
+    def latest_deal_state(self) -> str:
+        d = self.latest_deal
+        return d.state if d else ""
+
+    @property
+    def latest_deal_source(self) -> str:
+        d = self.latest_deal
+        return d.source if d else ""
+
     def embed_from_profile(self, profile: dict) -> None:
         """Compute and persist the 384-dim embedding from an in-hand profile.
 

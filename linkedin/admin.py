@@ -50,6 +50,9 @@ class LeadAdmin(admin.ModelAdmin):
             ("LinkedIn URL", "linkedin_url"),
             ("URN", "urn"),
             ("Disqualified", "disqualified"),
+            ("Latest Deal State", "latest_deal_state"),
+            ("Latest Deal Source", "latest_deal_source"),
+            ("Latest Qualification Reason", "latest_qualification_reason"),
             ("Created", "creation_date"),
             ("Updated", "update_date"),
         ],
@@ -70,6 +73,9 @@ class LeadDiscoveryAdmin(admin.ModelAdmin):
             ("Source", "source"),
             ("Keyword", "keyword"),
             ("Discovered At", "discovered_at"),
+            ("Latest Deal State", "lead.latest_deal_state"),
+            ("Latest Deal Source", "lead.latest_deal_source"),
+            ("Latest Qualification Reason", "lead.latest_qualification_reason"),
         ],
     )]
 
