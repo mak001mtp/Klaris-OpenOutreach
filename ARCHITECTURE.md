@@ -40,41 +40,52 @@ Single write path: `apply(config)` — idempotent, creates missing Campaign, Lin
 
 ## Profile State Machine
 
-`enums.py:ProfileState` (TextChoices) values ARE CRM stage names: QUALIFIED, READY_TO_CONNECT, PENDING, CONNECTED, COMPLETED, FAILED. Pre-Deal states: url_only (Lead row exists but `embedding` is null), enriched (has `embedding`). `Lead.disqualified=True` = permanent account-level exclusion. LLM rejections = FAILED Deals with wrong_fit outcome (campaign-scoped).
+`enums.py:ProfileState` (TextChoices) retains the historical values (QUALIFIED, READY_TO_CONNECT, PENDING, CONNECTED, COMPLETED, FAILED), but in the qualify-only pipeline only **QUALIFIED** and **FAILED** are reachable. Pre-Deal states: url_only (Lead row exists but `embedding` is null), enriched (has `embedding`). `Lead.disqualified=True` = permanent account-level exclusion. LLM rejections = FAILED Deals with `wrong_fit` outcome (campaign-scoped).
 
 `crm/models/deal.py:Outcome` (TextChoices): converted, not_interested, wrong_fit, no_budget, has_solution, bad_timing, unresponsive, unknown. Used by `Deal.outcome`.
+
+`crm/models/deal.py:Source` (TextChoices): `people_search`, `job_signal`, `post_signal`. Used by `Deal.source`. Funnel attribution: `crm/models/lead.py:LeadDiscovery` is an audit row written by `discover_and_enrich(source=...)` every time a funnel surfaces a lead (including dedup). `promote_lead_to_deal` and `_create_deal` read the latest `LeadDiscovery` for the lead and stamp its `source` onto the new Deal.
 
 ## Task Queue
 
 Persistent queue backed by `Task` model. Worker loop in `daemon.py`: `seconds_until_active()` guard pauses outside active hours/rest days → pop oldest due task → set campaign on session → RUNNING → dispatch via `_HANDLERS` dict → COMPLETED/FAILED. Failures captured by `failure_diagnostics()` context manager.
 
-Task creation is centralized in `linkedin/tasks/scheduler.py`. No other module inserts Task rows. The module exposes three layers: (1) low-level `enqueue_connect`/`enqueue_check_pending`/`enqueue_follow_up` with per-call dedup against existing PENDING rows, (2) a state-transition hook `on_deal_state_entered(deal)` fired by `set_profile_state()` that picks the right task for the new state, and (3) `reconcile(session)` which walks CRM state and recreates missing tasks.
+Task creation is centralized in `linkedin/tasks/scheduler.py`. No other module inserts Task rows. The module exposes: (1) low-level `enqueue_qualify(campaign_id, delay_seconds)` with dedup against existing PENDING rows, and (2) `reconcile(session)` which seeds one qualify task per campaign and recovers stale RUNNING rows.
 
-The daemon calls `reconcile()` whenever the queue has no ready task — startup and every idle cycle. This is the retry mechanism: a handler that crashes mid-execution leaves a FAILED task with no successor, and the next idle cycle re-creates it from the Deal's state. `AuthenticationError` (401) triggers `session.reauthenticate()` then marks the task FAILED; reconcile picks it up.
+The daemon calls `reconcile()` whenever the queue has no ready task — startup and every idle cycle. This is the retry mechanism: a handler that crashes mid-execution leaves a FAILED task with no successor, and the next idle cycle re-creates it. `AuthenticationError` (401) triggers `session.reauthenticate()` then marks the task FAILED; reconcile picks it up.
 
-Three task types (handlers in `linkedin/tasks/`, signature: `handle_*(task, session, qualifiers)`):
+One task type (handler in `linkedin/tasks/qualify.py`, signature `handle_qualify(task, session, qualifiers)`):
 
-1. **`handle_connect`** — Unified via `ConnectStrategy` dataclass. Regular: `find_candidate()` from `pools.py`; freemium: `find_freemium_candidate()`. Unreachable detection after `MAX_CONNECT_ATTEMPTS` (3).
-2. **`handle_check_pending`** — Per-profile. Exponential backoff with jitter. On acceptance → enqueues `follow_up`.
-3. **`handle_follow_up`** — Per-profile. Calls `run_follow_up_agent()` which returns a `FollowUpDecision` (structured output: `send_message`/`mark_completed`/`wait`). Handler executes the decision deterministically.
+- Runs three discovery funnels in sequence:
+  1. `run_job_discovery(session)` — walks `Campaign.job_keywords` → companies → `Campaign.persona_keywords` → buyer profiles (tagged `job_signal`).
+  2. `run_content_discovery(session)` — walks `Campaign.content_keywords` → post authors (tagged `post_signal`).
+  3. Drains `qualify_source(session, qualifier)` from `linkedin/pipeline/pools.py`, which pulls from people-search keywords when needed (tagged `people_search`) and runs LLM qualification on accumulated Leads.
+- Self-reschedules via `enqueue_qualify` with `connect_no_candidate_delay_seconds`.
+
+## Three Discovery Funnels
+
+- **People search** (`linkedin/actions/search.py:search_people`) — existing flow. Generates keywords from `Campaign.product_docs + campaign_objective` via `linkedin/pipeline/search_keywords.py`, navigates `/search/results/people/`, enriches /in/ URLs with `source="people_search"`.
+- **Job signals** (`linkedin/actions/job_search.py` + `linkedin/pipeline/job_pool.py`) — `search_jobs(keyword)` navigates `/jobs/search/`, extracts company URLs from each job card. `discover_people_at_company(company_url, persona_keywords)` then runs people search for each persona scoped to the company, enriching matching /in/ profiles with `source="job_signal"`.
+- **Post signals** (`linkedin/actions/content_search.py` + `linkedin/pipeline/content_pool.py`) — `search_content(keyword)` navigates `/search/results/content/`, extracts every post author's /in/ URL, enriches with `source="post_signal"`.
+
+All three funnels write through `linkedin/db/leads.py:discover_and_enrich`, which records a `LeadDiscovery(lead, source, keyword, discovered_at)` row for every URL — new or already known. That row is the single source of truth for funnel attribution.
 
 ## Qualification ML Pipeline
 
 GPR (sklearn, ConstantKernel * RBF) inside Pipeline(StandardScaler, GPR) with BALD active learning:
 
 1. **Balance-driven selection** — n_negatives > n_positives → exploit (highest P); otherwise → explore (highest BALD).
-2. **LLM decision** — All decisions via LLM (`qualify_lead.j2`). GP only for candidate selection and confidence gate.
-3. **READY_TO_CONNECT gate** — P(f > 0.5) above `min_ready_to_connect_prob` (0.9) promotes QUALIFIED → READY_TO_CONNECT.
+2. **LLM decision** — All decisions via LLM (`qualify_lead.j2`). GP only for candidate selection.
 
-384-dim FastEmbed embeddings stored directly on Lead model, per-campaign GP models at ``Campaign.model_blob` (BinaryField, joblib-dumped with `compress=3`)`. Cold start returns None until >=2 labels of both classes.
+384-dim FastEmbed embeddings stored directly on Lead model, per-campaign GP models at `Campaign.model_blob` (BinaryField, joblib-dumped with `compress=3`). Cold start returns None until >=2 labels of both classes. All three funnels feed the same qualifier — there is no fork by source.
 
 ## Django Apps
 
 Three apps in `INSTALLED_APPS`:
 
-- **`linkedin`** — Main app: Campaign (with users M2M), LinkedInProfile, SearchKeyword, ActionLog, Task models. All automation logic.
-- **`crm`** — Lead (with embedding) and Deal models (in `crm/models/lead.py` and `crm/models/deal.py`). Also defines `Outcome` enum.
-- **`chat`** — `ChatMessage` model (GenericForeignKey to any object, content, owner, answer_to threading, topic).
+- **`linkedin`** — Main app: Campaign (with users M2M and `job_keywords`/`content_keywords`/`persona_keywords` JSON fields), LinkedInProfile, SearchKeyword, ActionLog, Task models. All automation logic.
+- **`crm`** — Lead (with embedding), LeadDiscovery (funnel audit), Deal (with `source` field) models. Also defines `Outcome` and `Source` enums.
+- **`chat`** — `ChatMessage` model retained for migration compatibility but unused in the qualify-only pipeline.
 
 ## CRM Data Model
 

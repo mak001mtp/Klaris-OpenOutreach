@@ -65,6 +65,9 @@ class Campaign(models.Model):
     is_freemium = models.BooleanField(default=False)
     action_fraction = models.FloatField(default=0.2)
     seed_public_ids = models.JSONField(default=list, blank=True)
+    job_keywords = models.JSONField(default=list, blank=True)
+    content_keywords = models.JSONField(default=list, blank=True)
+    persona_keywords = models.JSONField(default=list, blank=True)
     model_blob = models.BinaryField(null=True, blank=True)
 
     def __str__(self):
@@ -224,9 +227,7 @@ class TaskQuerySet(models.QuerySet):
 
 class Task(models.Model):
     class TaskType(models.TextChoices):
-        CONNECT = "connect"
-        CHECK_PENDING = "check_pending"
-        FOLLOW_UP = "follow_up"
+        QUALIFY = "qualify"
 
     class Status(models.TextChoices):
         PENDING = "pending"

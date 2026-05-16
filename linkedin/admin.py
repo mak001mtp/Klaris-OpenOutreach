@@ -1,8 +1,7 @@
 # linkedin/admin.py
 from django.contrib import admin
 
-from chat.models import ChatMessage
-
+from crm.models import Deal, Lead, LeadDiscovery
 from linkedin.models import ActionLog, Campaign, LinkedInProfile, SearchKeyword, SiteConfig, Task
 
 
@@ -19,8 +18,48 @@ class SiteConfigAdmin(admin.ModelAdmin):
 
 @admin.register(Campaign)
 class CampaignAdmin(admin.ModelAdmin):
-    list_display = ("name", "booking_link", "is_freemium", "action_fraction")
+    list_display = ("name", "booking_link")
     filter_horizontal = ("users",)
+    fieldsets = (
+        (None, {"fields": ("name", "users", "booking_link")}),
+        ("ICP & qualification", {"fields": ("product_docs", "campaign_objective")}),
+        ("Discovery keywords", {
+            "fields": ("seed_public_ids", "job_keywords", "content_keywords", "persona_keywords"),
+            "description": (
+                "job_keywords: hiring-role keywords (e.g. 'Customer Success Operations'). "
+                "content_keywords: post-topic keywords (e.g. 'customer churn'). "
+                "persona_keywords: buyer titles used to find contacts at companies "
+                "discovered via job signals (e.g. 'VP Customer Success'). "
+                "All three are JSON lists of strings."
+            ),
+        }),
+    )
+
+
+@admin.register(Lead)
+class LeadAdmin(admin.ModelAdmin):
+    list_display = ("public_identifier", "linkedin_url", "disqualified", "creation_date")
+    list_filter = ("disqualified",)
+    search_fields = ("public_identifier", "linkedin_url", "urn")
+    readonly_fields = ("creation_date", "update_date")
+
+
+@admin.register(LeadDiscovery)
+class LeadDiscoveryAdmin(admin.ModelAdmin):
+    list_display = ("lead", "source", "keyword", "discovered_at")
+    list_filter = ("source",)
+    raw_id_fields = ("lead",)
+    date_hierarchy = "discovered_at"
+
+
+@admin.register(Deal)
+class DealAdmin(admin.ModelAdmin):
+    list_display = ("lead", "campaign", "state", "source", "outcome", "creation_date")
+    list_filter = ("source", "state", "outcome", "campaign")
+    search_fields = ("lead__public_identifier", "lead__linkedin_url", "reason")
+    raw_id_fields = ("lead", "campaign")
+    readonly_fields = ("creation_date", "update_date")
+    date_hierarchy = "creation_date"
 
 
 @admin.register(LinkedInProfile)
@@ -57,10 +96,3 @@ class TaskAdmin(admin.ModelAdmin):
     date_hierarchy = "scheduled_at"
 
 
-@admin.register(ChatMessage)
-class ChatMessageAdmin(admin.ModelAdmin):
-    list_display = ("content_type", "object_id", "owner", "creation_date")
-    list_filter = ("content_type", "owner")
-    raw_id_fields = ("owner", "answer_to", "topic")
-    date_hierarchy = "creation_date"
-    readonly_fields = ("content_type", "object_id", "content", "owner", "creation_date")

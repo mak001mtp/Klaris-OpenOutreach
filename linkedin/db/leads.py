@@ -21,13 +21,19 @@ def lead_exists(url: str) -> bool:
     return Lead.objects.filter(public_identifier=pid).exists()
 
 
-def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional[int]:
-    """Create Lead with full profile data and embedding.
+def create_enriched_lead(
+    session, url: str, profile: Dict[str, Any],
+    source: str = "people_search", keyword: str = "",
+) -> Optional[int]:
+    """Create Lead with full profile data and embedding, record a discovery.
 
     Returns lead PK or None if exists.
     Does NOT create Deal — that comes at qualification.
+
+    ``source`` and ``keyword`` are recorded as a LeadDiscovery row so the
+    funnel attribution survives across qualification.
     """
-    from crm.models import Lead
+    from crm.models import Lead, LeadDiscovery
 
     # Use canonical public_identifier from Voyager response when available.
     canonical_pid = profile.get("public_identifier")
@@ -37,16 +43,22 @@ def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional
     urn = profile.get("urn") or None
 
     with transaction.atomic():
-        if Lead.objects.filter(public_identifier=public_id).exists():
+        existing = Lead.objects.filter(public_identifier=public_id).first()
+        if existing:
+            LeadDiscovery.objects.create(lead=existing, source=source, keyword=keyword)
             return None
-        if urn and Lead.objects.filter(urn=urn).exists():
-            logger.info(
-                "Lead with URN %s already exists — skipping duplicate %s",
-                urn, public_id,
-            )
-            return None
+        if urn:
+            by_urn = Lead.objects.filter(urn=urn).first()
+            if by_urn:
+                LeadDiscovery.objects.create(lead=by_urn, source=source, keyword=keyword)
+                logger.info(
+                    "Lead with URN %s already exists — skipping duplicate %s",
+                    urn, public_id,
+                )
+                return None
         lead = Lead.objects.create(linkedin_url=clean_url, public_identifier=public_id)
         _cache_urn_from_profile(lead, profile)
+        LeadDiscovery.objects.create(lead=lead, source=source, keyword=keyword)
 
     lead.embed_from_profile(profile)
 
@@ -56,25 +68,32 @@ def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional
 
 @transaction.atomic
 def promote_lead_to_deal(session, public_id: str, reason: str = ""):
-    """Create a QUALIFIED Deal for a Lead.
+    """Create a QUALIFIED Deal for a Lead, attributed to the latest funnel.
+
+    Reads the most recent ``LeadDiscovery`` row for this Lead and stamps
+    its ``source`` onto the Deal. Falls back to ``people_search``.
 
     Returns the Deal.
     """
-    from crm.models import Lead, Deal
+    from crm.models import Lead, Deal, Source
 
     lead = Lead.objects.filter(public_identifier=public_id).first()
     if not lead:
         raise ValueError(f"No Lead for {public_id}")
 
+    latest = lead.discoveries.order_by("-discovered_at").first()
+    source = latest.source if latest else Source.PEOPLE_SEARCH
+
     deal = Deal.objects.create(
         lead=lead,
         campaign=session.campaign,
         state=ProfileState.QUALIFIED,
+        source=source,
         reason=reason,
     )
 
     from termcolor import colored
-    logger.info("%s %s", public_id, colored("QUALIFIED", "green", attrs=["bold"]))
+    logger.info("%s %s [%s]", public_id, colored("QUALIFIED", "green", attrs=["bold"]), source)
     return deal
 
 
@@ -121,17 +140,35 @@ def disqualify_lead(public_id: str):
     lead.save(update_fields=["disqualified"])
 
 
-def discover_and_enrich(session, urls):
+def discover_and_enrich(session, urls, source: str = "people_search", keyword: str = ""):
     """For each new URL, call Voyager API, create enriched Lead (with embedding).
 
-    Skips URLs that already have a Lead, caps at enrich_max_per_page (DOM
-    order — LinkedIn's own relevance), and pauses a human-ish
+    Skips URLs that already have a Lead (but still records a LeadDiscovery
+    for funnel attribution), caps at enrich_max_per_page (DOM order —
+    LinkedIn's own relevance), and pauses a human-ish
     [enrich_min_delay_seconds, enrich_max_delay_seconds] between scrapes.
+
+    ``source`` and ``keyword`` are stamped onto each LeadDiscovery row so
+    Deals later created from these leads can be attributed to the funnel
+    that surfaced them.
     """
+    from crm.models import Lead, LeadDiscovery
     from linkedin.api.client import PlaywrightLinkedinAPI
     from linkedin.conf import CAMPAIGN_CONFIG
 
-    new_urls = [u for u in urls if not lead_exists(u)]
+    # Record a discovery row for any URL that already maps to a Lead — even
+    # if we skip the Voyager scrape — so multi-funnel attribution is preserved.
+    new_urls = []
+    for u in urls:
+        pid = url_to_public_id(u)
+        if not pid:
+            continue
+        existing = Lead.objects.filter(public_identifier=pid).first()
+        if existing:
+            LeadDiscovery.objects.create(lead=existing, source=source, keyword=keyword)
+        else:
+            new_urls.append(u)
+
     if not new_urls:
         return
 
@@ -162,7 +199,7 @@ def discover_and_enrich(session, urls):
             logger.warning("Empty profile for %s — skipping", url)
             continue
 
-        if create_enriched_lead(session, url, profile) is not None:
+        if create_enriched_lead(session, url, profile, source=source, keyword=keyword) is not None:
             enriched += 1
 
         time.sleep(random.uniform(min_delay, max_delay))

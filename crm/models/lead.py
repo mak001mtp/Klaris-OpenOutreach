@@ -163,3 +163,27 @@ class Lead(models.Model):
             return np.empty((0, 384), dtype=np.float32), np.empty(0, dtype=np.int32)
 
         return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int32)
+
+
+class LeadDiscovery(models.Model):
+    """Audit row: which funnel surfaced this lead, when, via what keyword.
+
+    A Lead may be discovered by more than one funnel (people search, job
+    signal, post signal). ``promote_lead_to_deal`` reads the latest row
+    for the lead and stamps it on the Deal.
+    """
+
+    class Meta:
+        verbose_name = _("Lead Discovery")
+        verbose_name_plural = _("Lead Discoveries")
+        indexes = [
+            models.Index(fields=["lead", "-discovered_at"]),
+        ]
+
+    lead = models.ForeignKey(Lead, on_delete=models.CASCADE, related_name="discoveries")
+    source = models.CharField(max_length=20, db_index=True)
+    keyword = models.CharField(max_length=300, blank=True, default="")
+    discovered_at = models.DateTimeField(default=timezone.now)
+
+    def __str__(self):
+        return f"{self.lead_id} via {self.source} @ {self.discovered_at:%Y-%m-%d}"

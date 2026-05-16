@@ -16,6 +16,12 @@ class Outcome(models.TextChoices):
     UNKNOWN = "unknown"
 
 
+class Source(models.TextChoices):
+    PEOPLE_SEARCH = "people_search"
+    JOB_SIGNAL = "job_signal"
+    POST_SIGNAL = "post_signal"
+
+
 class Deal(models.Model):
     class Meta:
         verbose_name = _("Deal")
@@ -32,6 +38,12 @@ class Deal(models.Model):
         max_length=20,
         choices=[(s.value, s.value) for s in ProfileState],
         default=ProfileState.QUALIFIED,
+    )
+    source = models.CharField(
+        max_length=20,
+        choices=Source.choices,
+        default=Source.PEOPLE_SEARCH,
+        db_index=True,
     )
     outcome = models.CharField(
         max_length=20,

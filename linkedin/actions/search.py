@@ -95,15 +95,21 @@ def _paginate_to_next_page(session: "AccountSession", page_num: int):
     )
 
 
-def search_people(session: "AccountSession", keyword: str, page: int = 1):
-    """Search LinkedIn People by keyword and navigate to the given page."""
+def search_people(session: "AccountSession", keyword: str, page: int = 1,
+                  source: str = "people_search"):
+    """Search LinkedIn People by keyword and navigate to the given page.
+
+    ``source`` is recorded as the funnel attribution on each newly
+    discovered Lead — pipelines that drive people-search from a different
+    upstream signal (e.g. job postings) can override it.
+    """
     session.ensure_browser()
     _initiate_search(session, keyword)
     if page > 1:
         _paginate_to_next_page(session, page)
 
     urls = extract_in_urls(session.page)
-    discover_and_enrich(session, urls)
+    discover_and_enrich(session, urls, source=source, keyword=keyword)
 
 
 def _simulate_human_search(session: "AccountSession", profile: Dict[str, Any]) -> bool:

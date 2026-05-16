@@ -1,19 +1,18 @@
 # linkedin/pipeline/pools.py
-"""Pool management via composable generators.
+"""People-search pool: search → enrich → qualify.
 
-Three generators chain via next(upstream, None):
+Two generators chain via next(upstream, None):
 
-    find_candidate() = next(ready_source, None)
-                            |
-                  ready_source  <- pulls from qualify_source
-                            |
-                 qualify_source  <- pulls from search_source
-                  (keeps searching until P > 0.5 candidates exist in exploit mode)
+    qualify_source  <- pulls from search_source
+     (keeps searching until P > 0.5 candidates exist in exploit mode)
                             |
                   search_source  <- yields keywords (never truly exhausts)
 
-Each qualify_source iteration produces exactly one label, which shifts the GP
-model — preventing the infinite-search-without-qualifying bug.
+Each qualify_source iteration produces exactly one label, which shifts the
+GP model — preventing the infinite-search-without-qualifying bug. The
+job_pool and content_pool funnels enrich Leads directly (without going
+through ``search_source``), but still feed the same ``qualify_source``
+loop downstream because qualification is shared across all three funnels.
 """
 from __future__ import annotations
 
@@ -25,7 +24,6 @@ import numpy as np
 from linkedin.conf import CAMPAIGN_CONFIG
 from linkedin.ml.qualifier import BayesianQualifier
 from linkedin.pipeline.qualify import fetch_qualification_candidates, run_qualification
-from linkedin.pipeline.ready_pool import find_ready_candidate, promote_to_ready
 from linkedin.pipeline.search import run_search
 
 logger = logging.getLogger(__name__)
@@ -126,36 +124,3 @@ def qualify_source(session, qualifier: BayesianQualifier) -> Generator[str, None
         yield result
 
 
-def ready_source(session, qualifier: BayesianQualifier, threshold: float | None = None) -> Generator[dict, None, None]:
-    """Yield ready-to-connect candidates, pulling from qualify when needed."""
-    if threshold is None:
-        threshold = CAMPAIGN_CONFIG["min_ready_to_connect_prob"]
-    qualify = qualify_source(session, qualifier)
-
-    while True:
-        candidate = find_ready_candidate(session, qualifier)
-        if candidate is not None:
-            yield candidate
-            continue
-
-        promoted = promote_to_ready(session, qualifier, threshold)
-        if promoted > 0:
-            continue
-
-        # Pull one qualification from upstream — may shift the GP model
-        if next(qualify, None) is not None:
-            # Re-check promote after new label
-            promote_to_ready(session, qualifier, threshold)
-            continue
-
-        # Upstream exhausted
-        return
-
-
-def find_candidate(session, qualifier: BayesianQualifier) -> dict | None:
-    """Top profile ready for connection, backfilling if needed.
-
-    Only used by regular campaigns. Freemium campaigns use
-    find_freemium_candidate() from pipeline.freemium_pool instead.
-    """
-    return next(ready_source(session, qualifier), None)
