@@ -5,6 +5,7 @@ pydantic-ai-slim[openai,anthropic,google,groq,mistral,cohere,bedrock]
 nest-asyncio
 jsonpath-ng
 pandas
+openpyxl
 jinja2
 termcolor
 Django>=5.2,<7.0

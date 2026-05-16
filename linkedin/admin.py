@@ -2,6 +2,7 @@
 from django.contrib import admin
 
 from crm.models import Deal, Lead, LeadDiscovery
+from linkedin.admin_export import export_xlsx_action
 from linkedin.models import ActionLog, Campaign, LinkedInProfile, SearchKeyword, SiteConfig, Task
 
 
@@ -42,6 +43,17 @@ class LeadAdmin(admin.ModelAdmin):
     list_filter = ("disqualified",)
     search_fields = ("public_identifier", "linkedin_url", "urn")
     readonly_fields = ("creation_date", "update_date")
+    actions = [export_xlsx_action(
+        filename="leads",
+        columns=[
+            ("Public Identifier", "public_identifier"),
+            ("LinkedIn URL", "linkedin_url"),
+            ("URN", "urn"),
+            ("Disqualified", "disqualified"),
+            ("Created", "creation_date"),
+            ("Updated", "update_date"),
+        ],
+    )]
 
 
 @admin.register(LeadDiscovery)
@@ -50,6 +62,16 @@ class LeadDiscoveryAdmin(admin.ModelAdmin):
     list_filter = ("source",)
     raw_id_fields = ("lead",)
     date_hierarchy = "discovered_at"
+    actions = [export_xlsx_action(
+        filename="lead_discoveries",
+        columns=[
+            ("Lead", "lead.public_identifier"),
+            ("LinkedIn URL", "lead.linkedin_url"),
+            ("Source", "source"),
+            ("Keyword", "keyword"),
+            ("Discovered At", "discovered_at"),
+        ],
+    )]
 
 
 @admin.register(Deal)
@@ -60,6 +82,20 @@ class DealAdmin(admin.ModelAdmin):
     raw_id_fields = ("lead", "campaign")
     readonly_fields = ("creation_date", "update_date")
     date_hierarchy = "creation_date"
+    actions = [export_xlsx_action(
+        filename="deals",
+        columns=[
+            ("Lead", "lead.public_identifier"),
+            ("LinkedIn URL", "lead.linkedin_url"),
+            ("Campaign", "campaign.name"),
+            ("State", "state"),
+            ("Source", "source"),
+            ("Outcome", "outcome"),
+            ("Reason", "reason"),
+            ("Created", "creation_date"),
+            ("Updated", "update_date"),
+        ],
+    )]
 
 
 @admin.register(LinkedInProfile)
