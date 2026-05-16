@@ -29,6 +29,7 @@ def search_content(session, keyword: str) -> int:
     number of new Leads — ``discover_and_enrich`` dedupes against existing
     rows but still records a LeadDiscovery for attribution).
     """
+    session.ensure_browser()
     page = session.page
     params = urlencode({"keywords": keyword})
     goto_page(

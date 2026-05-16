@@ -28,11 +28,6 @@ logger = logging.getLogger(__name__)
 JOBS_SEARCH_URL = "https://www.linkedin.com/jobs/search/"
 PEOPLE_SEARCH_URL = "https://www.linkedin.com/search/results/people/"
 
-_JOB_CARD_SELECTORS = (
-    "div.job-card-container, "
-    "li.jobs-search-results__list-item, "
-    "div.base-card"
-)
 _COMPANY_LINK_SELECTOR = 'a[href*="/company/"]'
 
 
@@ -50,22 +45,28 @@ def _company_url_from_href(page_url: str, href: str) -> str | None:
 
 
 def search_jobs(session, keyword: str) -> list[str]:
-    """Return canonical company URLs hiring for ``keyword``."""
+    """Return canonical company URLs hiring for ``keyword``.
+
+    LinkedIn's Jobs search DOM changes frequently, so rather than walk
+    job cards we scrape every ``/company/<slug>`` link on the page and
+    dedupe — every job card always contains one.
+    """
+    session.ensure_browser()
     page = session.page
     params = urlencode({"keywords": keyword})
     goto_page(
         session,
-        action=lambda: page.goto(f"{JOBS_SEARCH_URL}?{params}"),
+        action=lambda: page.goto(f"{JOBS_SEARCH_URL}?{params}", wait_until="domcontentloaded"),
         expected_url_pattern="/jobs/search/",
         error_message="Failed to reach Jobs search results",
     )
 
+    # Let the results panel hydrate.
+    session.wait()
+
     companies: list[str] = []
     seen: set[str] = set()
-    for card in page.locator(_JOB_CARD_SELECTORS).all():
-        link = card.locator(_COMPANY_LINK_SELECTOR).first
-        if link.count() == 0:
-            continue
+    for link in page.locator(_COMPANY_LINK_SELECTOR).all():
         href = link.get_attribute("href")
         company_url = _company_url_from_href(page.url, href or "")
         if company_url and company_url not in seen:
@@ -86,6 +87,7 @@ def discover_people_at_company(
 
     Returns the number of /in/ URLs enriched across all personas.
     """
+    session.ensure_browser()
     page = session.page
     company_slug = urlparse(company_url).path.strip("/").split("/")[-1]
 
